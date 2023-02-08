@@ -122,6 +122,10 @@ class WebDatasetSampleWriter:
             sample = {"__key__": key, self.encode_format: img_str}
             if self.save_caption:
                 sample["txt"] = str(caption) if caption is not None else ""
+
+            # VIKTOR
+            sample['ocr_txt'] = meta['ocr_txt']
+
             # some meta data may not be JSON serializable
             for k, v in meta.items():
                 if isinstance(v, np.ndarray):

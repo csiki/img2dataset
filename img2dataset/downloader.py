@@ -16,6 +16,8 @@ import fsspec
 from .logger import CappedCounter
 from .logger import write_stats
 
+from paddleocr import PaddleOCR
+
 
 def is_disallowed(headers, user_agent_token, disallowed_header_directives):
     """Check if HTTP headers contain an X-Robots-Tag directive disallowing usage"""
@@ -75,6 +77,16 @@ def compute_key(key, shard_id, oom_sample_per_shard, oom_shard_count):
     return str_key
 
 
+def detect_txt(img, ocr_model, confidence=.7):  # VIKTOR
+    result = ocr_model.ocr(img, cls=True)
+    result = result[0]
+    # boxes = [line[0] for line in result]
+    txts = [line[1][0] for line in result]
+    scores = [line[1][1] for line in result]
+    high_conf_txts = [txt for txt, score in zip(txts, scores) if score > confidence]
+    return high_conf_txts
+
+
 class Downloader:
     """The downloader class gets calls with shards, download them then call the writer to write them down"""
 
@@ -120,6 +132,9 @@ class Downloader:
         )
         self.blurring_bbox_col = blurring_bbox_col
 
+        # VIKTOR
+        # self.ocr_model = PaddleOCR(use_angle_cls=True, lang='en', show_log=False, use_gpu=True)
+
     def __call__(
         self,
         row,
@@ -160,6 +175,9 @@ class Downloader:
         if self.compute_hash is not None and self.compute_hash not in schema.names:
             schema = schema.append(pa.field(self.compute_hash, pa.string()))
 
+        # VIKTOR
+        schema = schema.append(pa.field("ocr_txt", pa.string()))
+
         pydict = df.select(self.column_list).to_pydict()
         shard_to_dl = list(enumerate(zip(*(pydict[col] for col in self.column_list))))
         del pydict
@@ -178,6 +196,9 @@ class Downloader:
         )
         bbox_indice = self.column_list.index(self.blurring_bbox_col) if self.blurring_bbox_col is not None else None
         key_url_list = [(key, x[url_indice]) for key, x in shard_to_dl]
+
+        # VIKTOR load ocr model
+        ocr_model = PaddleOCR(use_angle_cls=True, lang='en', show_log=False, use_gpu=True)
 
         # this prevents an accumulation of more than twice the number of threads in sample ready to resize
         # limit the memory usage
@@ -215,7 +236,7 @@ class Downloader:
                     _, sample_data = shard_to_dl[key]
                     str_key = compute_key(key, shard_id, oom_sample_per_shard, self.oom_shard_count)
                     meta = {
-                        # Skip columsn containing a the verification hash and only save the compute hash
+                        # Skip columsn containing the verification hash and only save the compute hash
                         **{
                             self.column_list[i]: sample_data[i]
                             for i in range(len(self.column_list))
@@ -228,6 +249,7 @@ class Downloader:
                         "height": None,
                         "original_width": None,
                         "original_height": None,
+                        "ocr_txt": None,
                     }
                     if self.extract_exif:
                         meta["exif"] = None
@@ -316,6 +338,10 @@ class Downloader:
                     if self.compute_hash is not None:
                         img_stream.seek(0)
                         meta[self.compute_hash] = getattr(hashlib, self.compute_hash)(img_stream.read()).hexdigest()
+
+                    # VIKTOR process img here, ocr detect text
+                    det_txts = detect_txt(img, ocr_model)
+                    meta["ocr_txt"] = '|||'.join(det_txts)
 
                     meta["status"] = status
                     meta["width"] = width
